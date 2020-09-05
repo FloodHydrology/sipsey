@@ -34,7 +34,7 @@ dem<-raster(paste0(spatial_dir,"II_Work\\sipsey_dem.tif"))
 flowlines<-st_read(paste0(spatial_dir,"II_Work\\flowlines.shp")) %>% st_zm()
 
 #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-#2.0 Define channel-------------------------------------------------------------
+#2.0 Remove valley slope from DEM-----------------------------------------------
 #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 #Export files to scratch workspace
 writeRaster(dem,paste0(workspace_dir,"dem.tif"), overwrite=T)
@@ -82,4 +82,12 @@ wbt_idw_interpolation(
   wd = workspace_dir
 )
 
+#Remove valley slope from dem
+wbt_subtract(
+  input1 = "dem_10.tif",
+  input2 = "idw.tif",
+  output = "dem_cor.tif",
+  wd = workspace_dir)
 
+#Read dem into R 
+dem_cor<-raster(paste0(workspace_dir,"dem_cor.tif"))
