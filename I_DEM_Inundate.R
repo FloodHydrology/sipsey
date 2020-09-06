@@ -5,9 +5,6 @@
 #Purpose: Create initial inundation maps of Sipsey River
 #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-#Convert USGS NAD27 datum to NAD83
-
-
 #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 #1.0 Setup workspace------------------------------------------------------------
 #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -16,7 +13,6 @@ remove(list=ls())
 
 #Load libraries of interest
 library(dataRetrieval)
-library(fasterize)
 library(sf)
 library(raster)
 library(whitebox)
@@ -29,8 +25,9 @@ spatial_dir<-"C:\\Users\\cnjones7\\Box Sync\\My Folders\\Research Projects\\Sips
 workspace_dir<-"C:\\Workspace\\sipsey\\dump\\"
 
 #Load relevant data
-dem<-raster(paste0(spatial_dir,"II_Work\\sipsey_dem.tif"))
-flowlines<-st_read(paste0(spatial_dir,"II_Work\\flowlines.shp")) %>% st_zm()
+dem<-raster(paste0(spatial_dir,"II_Work\\dem_neon.tif"))
+flowlines<-st_read(paste0(spatial_dir,"II_Work\\flowlines.shp")) %>% st_zm() %>% 
+      filter(GNIS_NAME == "Sipsey River")
 gage<-st_read(paste0(spatial_dir,"II_Work\\gage_point.shp")) %>% st_zm()
 
 #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -45,34 +42,10 @@ df<-readNWISdv(
 #Retreive sd_curve
 sd_curve<-readNWISrating('02446500', "base")
 
-#Flood Frequency Analysis ------------------------------------------------------
-#Isolate annual peak flood events
-df<-df %>% 
-  #Convert to tibble
-  as_tibble() %>% 
-  #select cols of interest
-  dplyr::select(date = Date, q = X_00060_00003) %>% 
-  #estimate annual max
-  mutate(year = year(date)) %>% 
-  group_by(year) %>% 
-  summarise(q_max = max(q))
+#Get datum data and convert ot meters
+datum <- readNWISsite('02446500')$alt_va*0.3048
 
-#Fit distribution to data
-fit_params<-fitdistr(df$q_max, 'lognormal')
-
-#Add probability to df
-df<-df %>% 
-  mutate(p = plnorm(q_max, 
-                    fit_params$estimate['meanlog'], 
-                    fit_params$estimate['sdlog']))
-
-#Estimate flood frequency
-df<-tibble(
- ri = c(2,5,10,25, 50, 100),
- q  = qlnorm((1-(1/ri)), fit_params$estimate['meanlog'], fit_params$estimate['sdlog'])
-)
-
-#2.3 Convert flood freq Flow values to Stage------------------------------------
+#2.2 Create stage-discharge relationship----------------------------------------
 #Clean up sd curve
 sd_curve<-sd_curve %>% 
   dplyr::mutate(
@@ -84,24 +57,19 @@ sd_curve<-sd_curve %>%
 #Create interpolation function
 sd_interp<-approxfun(sd_curve$flow_cfs, sd_curve$depth_m)
 
+#2.3 Estimate streamflow elevation at gage -------------------------------------
+#clean up df
+df<-df %>% 
+  as_tibble() %>% 
+  select(
+    date = 'Date', 
+    q_cfs = 'X_00060_00003')
+
 #Add depth to return interval df
-df <- df %>% 
-  mutate(s = sd_interp(q))
-
-#2.4 Convert stage to dem datum ------------------------------------------------
-#Get datum data
-datum<-readNWISsite('02446500')$alt_va    
-  #Note this is in NAD27, will need to conver DEM to NAD27 as well
-
-#convert to meteres
-datum<-datum*0.3048
+df <- df %>% mutate(stage_m = sd_interp(q_cfs))
 
 #Convert stage to elevation
-df <- df %>% 
-  mutate(ele_m = s + datum)
-
-#Convert from NAD27 to NAD83
-
+df <- df %>% mutate(ele_m = stage_m + datum)
 
 #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 #3.0 Remove valley slope from DEM-----------------------------------------------
@@ -147,7 +115,7 @@ wbt_idw_interpolation(
   field = "VALUE", 
   output = "idw.tif",
   base =  "dem_10.tif",
-  radius = 2000,
+  radius = 5000,
   weight = 4.2,
   wd = workspace_dir
 )
@@ -170,10 +138,9 @@ dem_norm<-raster(paste0(workspace_dir,"dem_norm.tif"))
 offset <- raster::extract(dem_norm, gage) - raster::extract(dem, gage)
 
 #Apply offset
-df<- df %>% 
-  mutate(ele_cor_m = ele_m + offset)
+df<- df %>% mutate(ele_norm_m = ele_m + offset)
 
-#4.2 Create flood maps----------------------------------------------------------
+#4.2 Inundation function----------------------------------------------------------
 #Create inundation function 
 dem_inundate<-function(dem_norm, ele){
   
@@ -186,13 +153,18 @@ dem_inundate<-function(dem_norm, ele){
   con(dem_norm>ele,0,1)
 }
   
-#Create rater layers
-flood_2yr<-dem_inundate(dem_norm, df$ele_cor_m[df$ri==2])
-flood_5yr<-dem_inundate(dem_norm, df$ele_cor_m[df$ri==5])
-flood_10yr<-dem_inundate(dem_norm, df$ele_cor_m[df$ri==10])
-flood_50yr<-dem_inundate(dem_norm, df$ele_cor_m[df$ri==50])
-flood_100yr<-dem_inundate(dem_norm, df$ele_cor_m[df$ri==50])
+#4.3 Wrapper function-----------------------------------------------------------
+#Wrapper function
+fun<-function(n){
+  ele<-df$ele_norm_m[n]
+  dem_inundate(dem_norm, ele)
+}
 
-plot(flood_2yr)
-plot(flood_100yr)
+#Apply wrapper function
+rs<-lapply(seq(1,nrow(df)), fun)
 
+#Create raster brick
+rs<-brick(rs)
+
+#Calculate sum
+dur<-calc(rs, sum)
