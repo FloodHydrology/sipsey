@@ -16,8 +16,8 @@ library(dataRetrieval)
 library(sf)
 library(raster)
 library(whitebox)
-library(parallel)
-library(MASS)
+library(leaflet)
+library(htmlwidgets)
 library(lubridate)
 library(tidyverse)
 
@@ -198,32 +198,56 @@ fun<-function(n){
 }
 
 #Apply function
-x<-lapply(seq(1,nrow(water_year)), fun)
+t0<-Sys.time()
+x<-lapply(seq(1,nrow(water_year)), fun) 
+tf<-Sys.time()
+tf-t0
 
 #Create raster brick
 rs<-stack(x)
 
 #Calculate sum
 dur<-calc(rs, max)
-
+backup<-dur
 #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 #5.0 Create an interactive leaflet map------------------------------------------
 #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 #project raster
-dur<-projectRaster(dur, crs='+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs')
+r<-dur
+r@crs<-dem@crs
+r<-projectRaster(r, crs='+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs')
+
+#Make zero values NA
+r[r==0]<-NA
+r[r>120]<-NA
+
+#Color pallet
+pal <- colorNumeric(c("#e0f3db","#a8ddb5","#0868ac","#084081"), values(r),
+                    na.color = "transparent")
 
 #leaflet
-m<-leaflet() %>% 
+m<-leaflet(r) %>% 
   #Add Basemaps
   addProviderTiles("Esri.WorldImagery", group = "ESRI") %>% 
   addTiles(group = "OSM") %>%
   #Add flowpath data
-  addRasterImage(x=dur,
-                 col="blue",
-                 group = "Inundation Duration") %>%
+  addRasterImage(
+    x=r,
+    col=pal,
+    opacity = 0.9,
+    group = "Inundation Duration") %>%
+  #AddLegend
+  addLegend(
+    title = "Inundation [days/yr]",
+    pal = pal, 
+    values = values(r)) %>% 
   #Add Layer Control Options
-  addLayersControl(baseGroups = c("Esri", "OSM"), 
-                   overlayGroups = c("Inundation Duration"))
+  addLayersControl(
+    baseGroups = c("Esri", "OSM"), 
+    overlayGroups = c("Inundation Duration"))
+
+#print leaflet
+m
 
 #Export widget
 saveWidget(m, file="inundation_dur.html")
