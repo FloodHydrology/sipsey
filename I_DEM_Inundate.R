@@ -16,6 +16,7 @@ library(dataRetrieval)
 library(sf)
 library(raster)
 library(whitebox)
+library(parallel)
 library(MASS)
 library(lubridate)
 library(tidyverse)
@@ -154,17 +155,75 @@ dem_inundate<-function(dem_norm, ele){
 }
   
 #4.3 Wrapper function-----------------------------------------------------------
-#Wrapper function
+#Denote water year for each record
+df<-df %>% 
+  mutate(
+    water_year = year(date),
+    month      = month(date),
+    water_year = if_else(month>=10, water_year+1, water_year)
+  ) %>% 
+  select(-month) %>% 
+  filter(water_year>=2000)
+
+#Create vector of water years
+water_year<-df %>% select(water_year) %>% distinct()
+
+#Create Wrapper function for each water year
 fun<-function(n){
-  ele<-df$ele_norm_m[n]
-  dem_inundate(dem_norm, ele)
+  
+  #add libraries of interest
+  library(dplyr)
+  library(raster)
+  
+  #isolate water year
+  ts<-df %>% filter(water_year == water_year[n])
+  
+  #Create inner fun
+  inner_fun<-function(m){
+    ele<-df$ele_norm_m[m]
+    dem_inundate(dem_norm, ele)
+  }
+  
+  #apply inner function
+  rs<-lapply(seq(1,nrow(ts)), inner_fun)
+  
+  #Create raster brick
+  rs<-stack(rs)
+  
+  #Calculate sum
+  dur<-raster::calc(rs, sum)
+  
+  #Export raster
+  return(dur)
 }
 
-#Apply wrapper function
-rs<-lapply(seq(1,nrow(df)), fun)
+#Apply function
+x<-lapply(seq(1,nrow(water_year)), fun)
 
 #Create raster brick
-rs<-brick(rs)
+rs<-stack(x)
 
 #Calculate sum
-dur<-calc(rs, sum)
+dur<-calc(rs, max)
+
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+#5.0 Create an interactive leaflet map------------------------------------------
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+#project raster
+dur<-projectRaster(dur, crs='+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs')
+
+#leaflet
+m<-leaflet() %>% 
+  #Add Basemaps
+  addProviderTiles("Esri.WorldImagery", group = "ESRI") %>% 
+  addTiles(group = "OSM") %>%
+  #Add flowpath data
+  addRasterImage(x=dur,
+                 col="blue",
+                 group = "Inundation Duration") %>%
+  #Add Layer Control Options
+  addLayersControl(baseGroups = c("Esri", "OSM"), 
+                   overlayGroups = c("Inundation Duration"))
+
+#Export widget
+saveWidget(m, file="inundation_dur.html")
